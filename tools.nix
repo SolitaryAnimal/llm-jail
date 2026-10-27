@@ -144,6 +144,18 @@
       ];
     };
   };
+  dsh = {
+    guestModule = ./guests/dsh.nix;
+    defaults = {
+      mem = 4096;
+      vcpu = 2;
+      configDirName = ".dsh";
+      configEnvVar = "DSH_HOME";
+      allowedDomains = [
+        "api.deepseek.com"
+      ];
+    };
+  };
   omp = {
     guestModule = ./guests/omp.nix;
     defaults = {

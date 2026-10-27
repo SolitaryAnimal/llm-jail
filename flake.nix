@@ -45,6 +45,7 @@
             autolith = autolith.packages.${system}.default;
             pi-coding-agent = llm-agents.packages.${system}.pi;
             omp = nixpkgs-rolling.legacyPackages.${system}.omp;
+            dsh = llm-agents.packages.${system}.dsh;
           };
           tool = pkgs.lib.makeOverridable (
           {
@@ -55,6 +56,7 @@
             autolith,
             pi-coding-agent,
             omp,
+            dsh,
             flags ? { },
           }:
           let
@@ -71,6 +73,7 @@
                   autolith
                   pi-coding-agent
                   omp
+                  dsh
                   ;
               };
               modules = [
@@ -115,6 +118,7 @@
           autolith = autolith.packages.${system}.default;
           pi-coding-agent = llm-agents.packages.${system}.pi;
           omp = nixpkgs-rolling.legacyPackages.${system}.omp;
+          dsh = llm-agents.packages.${system}.dsh;
         }
       );
     };
