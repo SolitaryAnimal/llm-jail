@@ -57,7 +57,7 @@ in
     # autoload, but the systemd-initrd path doesn't always trigger it for
     # `mount -t overlay`, so make it explicit.
     boot.initrd.kernelModules = [ "overlay" ];
-    boot.kernelModules = [ "nf_tables" "virtio_console" ];
+    boot.kernelModules = [ "nf_tables" "virtio_console" "virtio_balloon" ];
 
     boot.initrd.supportedFilesystems = [ "ext4" ];
 

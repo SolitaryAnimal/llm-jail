@@ -151,8 +151,16 @@
       vcpu = 2;
       configDirName = ".dsh";
       configEnvVar = "DSH_HOME";
+      # dsh is a web UI; expose it to the host browser via QEMU user networking.
+      portForwards = [
+        {
+          host = 3080;
+          guest = 3080;
+        }
+      ];
       allowedDomains = [
         "api.deepseek.com"
+        "platform.deepseek.com"
       ];
     };
   };

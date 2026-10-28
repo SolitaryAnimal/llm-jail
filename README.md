@@ -13,6 +13,7 @@ Supported tools:
 | [Autolith](https://github.com/luciusmagn/autolith) (x86_64 only) | `llm-jail-autolith` | `--permissions full` |
 | [Pi](https://pi.dev) | `llm-jail-pi` | - |
 | [oh-my-pi](https://omp.sh/) | `llm-jail-omp` | - |
+| [dsh / DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | `llm-jail-dsh` | - |
 | Interactive shell (debugging) | `llm-jail-shell` | - |
 
 ## Requirements
@@ -47,6 +48,9 @@ nix run github:braiins/llm-jail#pi
 # Run oh-my-pi
 nix run github:braiins/llm-jail#omp
 
+# Run dsh (Web UI; open the printed http://127.0.0.1:3080/ URL)
+nix run github:braiins/llm-jail#dsh
+
 # Authenticate Autolith, then run it (x86_64 Linux only)
 nix run github:braiins/llm-jail#autolith -- -- --auth
 nix run github:braiins/llm-jail#autolith
@@ -61,11 +65,18 @@ Pass tool arguments after `--`:
 nix run github:braiins/llm-jail#claude -- -- -p "Refactor the auth module" --max-turns 5
 ```
 
+dsh is a Web UI rather than a terminal TUI. With no tool arguments the runner starts `dsh web --no-open` and forwards host `127.0.0.1:3080` into the guest; open the tokenized `dsh web:` URL printed in the terminal. Port `3080` must be free on the host (the forward binds loopback only). Arguments after `--` are passed to `dsh` verbatim, which is useful for its other modes:
+
+```bash
+# One-shot headless run
+nix run github:braiins/llm-jail#dsh -- -- --profile headless "run the tests"
+```
+
 ## First run & authentication
 
-Each tool keeps its state in a jail-private directory on the host - `~/.config/llm-jail/<tool>/<profile>` (profile `default` unless `--profile` is given) - mounted read-write into the guest and selected via the tool's native relocation variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, Autolith's XDG roots plus `CODEX_HOME`/`GROK_HOME`, `XDG_DATA_HOME` for opencode, or `PI_CODING_AGENT_DIR` for Pi). Your real `~/.claude`, `~/.codex`, `~/.copilot`, `~/.local/share/opencode`, and `~/.pi` are never mounted or read.
+Each tool keeps its state in a jail-private directory on the host - `~/.config/llm-jail/<tool>/<profile>` (profile `default` unless `--profile` is given) - mounted read-write into the guest and selected via the tool's native relocation variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, Autolith's XDG roots plus `CODEX_HOME`/`GROK_HOME`, `XDG_DATA_HOME` for opencode, `PI_CODING_AGENT_DIR` for Pi, or `DSH_HOME` for dsh). Your real `~/.claude`, `~/.codex`, `~/.copilot`, `~/.local/share/opencode`, and `~/.pi` are never mounted or read.
 
-On first run the directory is empty, so the tool walks you through its normal login flow in the terminal (the OAuth paste-a-URL flow works as-is). Credentials, settings, and session history then persist across runs. Copilot on headless Linux will ask to store its token in plaintext inside the config dir - that's expected, there is no keychain in the guest. opencode doesn't prompt by itself - log in once with `nix run .#opencode -- -- auth login`. Authenticate Autolith explicitly with `nix run .#autolith -- -- --auth`; its first launch also builds pinned recovery and active Lisp images offline in the private state directory. Pi has no explicit login command - launch it once with `nix run .#pi` and use its built-in `/login` flow; credentials persist in the jail-private state directory.
+On first run the directory is empty, so the tool walks you through its normal login flow in the terminal (the OAuth paste-a-URL flow works as-is). Credentials, settings, and session history then persist across runs. Copilot on headless Linux will ask to store its token in plaintext inside the config dir - that's expected, there is no keychain in the guest. opencode doesn't prompt by itself - log in once with `nix run .#opencode -- -- auth login`. Authenticate Autolith explicitly with `nix run .#autolith -- -- --auth`; its first launch also builds pinned recovery and active Lisp images offline in the private state directory. Pi has no explicit login command - launch it once with `nix run .#pi` and use its built-in `/login` flow; credentials persist in the jail-private state directory. dsh opens its Web UI without a login prompt: enter a DeepSeek API key under **Settings → Models**, which stores it in `$DSH_HOME/.credentials.yaml` inside the jail-private state directory.
 
 Work for multiple clients by giving each its own profile, each with its own one-time login:
 
@@ -79,7 +90,7 @@ nix run .#claude -- --profile client2
 ## Usage
 
 ```
-llm-jail-{claude,codex,copilot,opencode,autolith,pi,shell} [options] [-- tool-args...]
+llm-jail-{claude,codex,copilot,opencode,autolith,pi,dsh,shell} [options] [-- tool-args...]
 ```
 
 ### Options
@@ -89,16 +100,18 @@ llm-jail-{claude,codex,copilot,opencode,autolith,pi,shell} [options] [-- tool-ar
 | `--dangerous` | Enable the tool's dangerous / unattended mode | off |
 | `--profile NAME` | State profile, a subdir of `--state-dir/<tool>` | `default` |
 | `--state-dir PATH` | Jail state root dir, mounted read-write | `~/.config/llm-jail` |
+| `--workspace PATH` | Host directory to mount as the workspace | current directory |
+| `--no-workspace` | Don't mount any workspace; expose only extra mounts | off |
 | `--immutable` | Mount workspace as read-only | off |
 | `--tmpdir PATH` | Directory to use for runtime data | `${TMPDIR:-/tmp}` |
-| `--mount PATH` | Extra read-write mount (repeatable) | - |
-| `--ro-mount PATH` | Extra read-only mount (repeatable) | - |
+| `--mount HOST[:GUEST]` | Extra read-write mount (repeatable) | - |
+| `--ro-mount HOST[:GUEST]` | Extra read-only mount (repeatable) | - |
 | `--nix-env` | Capture `nix develop` environment from workspace | off |
 | `--devenv` | Capture `devenv.sh` shell environment from workspace | off |
 | `--store-disk SIZE` | Create a disk-backed /nix overlay (SIZE in GB) | off |
 | `--allow-domain DOMAIN` | Add domain to network whitelist (repeatable) | tool defaults |
 | `--no-net-filter` | Disable network filtering (unrestricted access) | filtering on |
-| `--mem SIZE` | VM memory in MB | 4096 |
+| `--mem SIZE` | VM memory ceiling in MB; host pages are allocated on demand and free guest pages are returned via virtio-balloon | 4096 |
 | `--vcpu COUNT` | Number of vCPUs | 2 |
 | `-h`, `--help` | Show help | - |
 
@@ -149,6 +162,22 @@ Mount an extra directory and allocate more resources:
 ```bash
 nix run .#claude -- --mount /tmp/data --mem 8192 --vcpu 4 -- -p "Process the dataset"
 ```
+
+Use a different directory as the workspace without changing the shell's cwd:
+
+```bash
+nix run .#claude -- --workspace /srv/project -- -p "Review this project"
+```
+
+Skip the current directory entirely and expose only specific directories (repeat `--mount`/`--ro-mount` as needed):
+
+```bash
+nix run .#claude -- --no-workspace \
+  --mount /srv/project:/project \
+  --ro-mount /srv/reference:/reference -- -p "Compare the two trees"
+```
+
+With `--no-workspace` the tool starts in `/home/user`; tools that ask for a workspace (such as the dsh Web UI) can select `/project` or `/reference`.
 
 Enable git-over-SSH by mounting your SSH directory (read-only):
 
@@ -311,7 +340,7 @@ No persistent disk images are involved. The guest kernel and initrd are built by
 
 ## Overriding tool packages
 
-Each runner is built with `lib.makeOverridable`, so the underlying tool package (`claude-code`, `codex-cli`, `copilot-cli`, `opencode`, `autolith`, or `pi-coding-agent`) can be swapped without forking the flake:
+Each runner is built with `lib.makeOverridable`, so the underlying tool package (`claude-code`, `codex-cli`, `copilot-cli`, `opencode`, `autolith`, `pi-coding-agent`, or `dsh`) can be swapped without forking the flake:
 
 ```nix
 # flake.nix (consumer)

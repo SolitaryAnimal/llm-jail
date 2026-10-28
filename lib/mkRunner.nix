@@ -13,6 +13,12 @@ let
   qemuPkg = pkgs.qemu_kvm;
   arch = if pkgs.stdenv.hostPlatform.isx86_64 then "x86_64" else "aarch64";
   allowedDomains = toolDefaults.allowedDomains ++ guest.config.llmjail.extraAllowedDomains;
+  # QEMU user networking, with optional host->guest TCP forwards declared per
+  # tool (e.g. dsh's Web UI). Bind the host side to loopback only.
+  nicOpts = "user,model=virtio-net-pci"
+    + lib.concatMapStrings
+      (fwd: ",hostfwd=tcp:127.0.0.1:${toString fwd.host}-:${toString fwd.guest}")
+      (toolDefaults.portForwards or [ ]);
 in
 pkgs.writeShellApplication {
   name = "llm-jail-${name}";
@@ -39,6 +45,8 @@ pkgs.writeShellApplication {
     DEVENV=0
     IMMUTABLE=0
     SAME_PATH=0
+    NO_WORKSPACE=0
+    WORKSPACE_HOST="$(pwd)"
     LLMJAIL_TMPDIR=''${TMPDIR:-/tmp}
     DISK_SIZE=0
     NET_FILTER=1
@@ -62,6 +70,8 @@ pkgs.writeShellApplication {
       --dangerous           Enable the tool's dangerous / unattended mode
       --profile NAME        State profile, a subdir of --state-dir/<tool> (default: default)
       --state-dir PATH      Jail state root dir (default: ~/.config/llm-jail)
+      --workspace PATH      Host directory to mount as the workspace (default: current directory)
+      --no-workspace        Don't mount a workspace; use only --mount/--ro-mount paths
       --immutable           Mount workspace as read-only instead of read-write
       --same-path           Mount workspace at its host path instead of /workspace
                              (lets tools like 'claude --resume' match sessions
@@ -117,6 +127,8 @@ pkgs.writeShellApplication {
                        exit 1 ;;
         --profile)     PROFILE="$2"; shift 2 ;;
         --state-dir)   STATE_DIR="$2"; shift 2 ;;
+        --workspace)   WORKSPACE_HOST="$2"; shift 2 ;;
+        --no-workspace) NO_WORKSPACE=1; shift ;;
         --config-dir|--config-dir=*)
                        echo "ERROR: --config-dir has been renamed to --state-dir and will be mounted as read-write." >&2
                        exit 1 ;;
@@ -138,6 +150,29 @@ pkgs.writeShellApplication {
         *)             echo "Unknown option: $1" >&2; usage ;;
       esac
     done
+
+    if [ "$NO_WORKSPACE" -eq 1 ]; then
+      if [ "$SAME_PATH" -eq 1 ]; then
+        echo "ERROR: --no-workspace and --same-path are mutually exclusive" >&2
+        exit 1
+      fi
+      if [ "$IMMUTABLE" -eq 1 ]; then
+        echo "ERROR: --immutable requires a workspace; use --ro-mount for read-only extras" >&2
+        exit 1
+      fi
+      if [ "$NIX_ENV" -eq 1 ] || [ "$DEVENV" -eq 1 ]; then
+        echo "ERROR: --nix-env and --devenv require a workspace" >&2
+        exit 1
+      fi
+    else
+      if [ ! -d "$WORKSPACE_HOST" ]; then
+        echo "ERROR: workspace '$WORKSPACE_HOST' is not a directory" >&2
+        exit 1
+      fi
+      # Normalize so --same-path and the guest env file always get an
+      # absolute path, regardless of how --workspace was written.
+      WORKSPACE_HOST="$(cd "$WORKSPACE_HOST" && pwd -P)"
+    fi
 
     # Jail-private tool state, fully separate from the host tool's own
     # config dir. --state-dir / LLMJAIL_STATE_DIR overrides the default
@@ -238,9 +273,15 @@ pkgs.writeShellApplication {
     }
     CLEANUP_FUNCS+=(cleanup_winch)
 
-    WORKSPACE_DIR="/workspace"
-    if [[ "$SAME_PATH" -eq 1 ]]; then
-      WORKSPACE_DIR="$(pwd)"
+    if [[ "$NO_WORKSPACE" -eq 1 ]]; then
+      # No workspace mount; start in the persistent home so the tool still
+      # has a writable cwd, and let --mount/--ro-mount paths be selected.
+      WORKSPACE_DIR="/home/user"
+    else
+      WORKSPACE_DIR="/workspace"
+      if [[ "$SAME_PATH" -eq 1 ]]; then
+        WORKSPACE_DIR="$WORKSPACE_HOST"
+      fi
     fi
     ENV_FILE="$RUNDIR/env"
     {
@@ -337,7 +378,7 @@ pkgs.writeShellApplication {
 
     if [ "$NIX_ENV" = "1" ]; then
       echo "Evaluating nix dev shell..." >&2
-      if nix print-dev-env --no-warn-dirty "$(pwd)" > "$RUNDIR/dev-env" 2>/dev/null; then
+      if nix print-dev-env --no-warn-dirty "$WORKSPACE_HOST" > "$RUNDIR/dev-env" 2>/dev/null; then
         echo "Dev shell environment captured." >&2
       else
         echo "WARNING: nix print-dev-env failed, continuing without dev shell" >&2
@@ -383,7 +424,7 @@ pkgs.writeShellApplication {
         rm -rf "$DEVENV_RUNTIME_SCRATCH"
       }
       CLEANUP_FUNCS+=(cleanup_devenv_runtime_scratch)
-      if DEVENV_ERR=$(XDG_RUNTIME_DIR="$DEVENV_RUNTIME_SCRATCH" _DEVENV_CALLER=direnv devenv --no-tui -q direnv-export < /dev/null 2>&1 >"$RUNDIR/dev-env"); then
+      if DEVENV_ERR=$(cd "$WORKSPACE_HOST" && XDG_RUNTIME_DIR="$DEVENV_RUNTIME_SCRATCH" _DEVENV_CALLER=direnv devenv --no-tui -q direnv-export < /dev/null 2>&1 >"$RUNDIR/dev-env"); then
         echo "Dev shell environment captured." >&2
       else
         echo "WARNING: devenv shell failed, continuing without dev shell" >&2
@@ -506,16 +547,18 @@ pkgs.writeShellApplication {
       fi
     }
 
-    validate_path "$(pwd)" "workspace path"
-    if [[ "$IMMUTABLE" -eq 1 ]]; then
-      add_mount "$(pwd)" "$WORKSPACE_DIR" "ro-nocache"
-    else
-      add_mount "$(pwd)" "$WORKSPACE_DIR" "rw"
-      if [[ -d "$(pwd)/.git/hooks" ]]; then
-        add_mount "$(pwd)/.git/hooks" "$WORKSPACE_DIR/.git/hooks" "ro-nocache"
+    if [[ "$NO_WORKSPACE" -eq 0 ]]; then
+      validate_path "$WORKSPACE_HOST" "workspace path"
+      if [[ "$IMMUTABLE" -eq 1 ]]; then
+        add_mount "$WORKSPACE_HOST" "$WORKSPACE_DIR" "ro-nocache"
+      else
+        add_mount "$WORKSPACE_HOST" "$WORKSPACE_DIR" "rw"
+        if [[ -d "$WORKSPACE_HOST/.git/hooks" ]]; then
+          add_mount "$WORKSPACE_HOST/.git/hooks" "$WORKSPACE_DIR/.git/hooks" "ro-nocache"
+        fi
       fi
+      MASK_ROOTS+=("$WORKSPACE_DIR")
     fi
-    MASK_ROOTS+=("$WORKSPACE_DIR")
 
     validate_path "$STATE_DIR" "state directory"
     # 9p/virtiofs refuse to share a non-existent path; first run starts empty and
@@ -671,6 +714,9 @@ pkgs.writeShellApplication {
     # unaffected. The pipeline is foreground: when QEMU exits, the pipe
     # closes, EOF drains the tail, pv exits, and pipefail propagates QEMU's
     # status - no FIFO, no background job, no cleanup.
+    # virtio-balloon free-page-reporting lets the host reclaim guest pages the
+    # kernel reports as free, so RSS shrinks after workloads exit instead of
+    # staying at the -m ceiling.
     # ARM virt defaults to GICv2; max also supports hosts with GICv3-only KVM.
     qemu-system-${arch} \
       ${lib.optionalString pkgs.stdenv.hostPlatform.isAarch64 "-machine virt,gic-version=max"} \
@@ -691,7 +737,8 @@ pkgs.writeShellApplication {
       -serial file:"$RUNDIR/kernel.log" \
       -no-reboot \
       -device virtio-rng-pci \
-      -nic user,model=virtio-net-pci \
+      -device virtio-balloon-pci,free-page-reporting=on \
+      -nic "${nicOpts}" \
       "''${SHARE_ARGS[@]}" \
       "''${DISK_ARGS[@]}" \
       | pv -q -B 64M
